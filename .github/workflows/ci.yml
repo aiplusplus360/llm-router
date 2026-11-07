@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e .
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Trivial prompt routes to the cheapest tier
+        run: |
+          out=$(llm-router route "hi there" --json)
+          echo "$out"
+          echo "$out" | python -c "import json,sys; d=json.load(sys.stdin); assert d['tier']=='nano', d['tier']"
+
+      - name: Code prompt routes to the top tier
+        run: |
+          out=$(llm-router route "implement a lock-free ring buffer" --json)
+          echo "$out"
+          echo "$out" | python -c "import json,sys; d=json.load(sys.stdin); assert d['tier']=='large', d['tier']; assert d['task']=='code', d['task']"
+
+      - name: Tight budget downgrades and says so
+        run: |
+          llm-router route "implement a compiler" --budget 0.002 > decision.txt
+          cat decision.txt
+          grep -q "downgraded" decision.txt
+
+      - name: Raise mode refuses to degrade
+        run: |
+          set +e
+          llm-router route "implement a compiler" --budget 0.002 --on-budget-pressure raise
+          code=$?
+          set -e
+          test "$code" -eq 1
+
+      - name: Compare table renders
+        run: |
+          llm-router compare "extract emails as json" > compare.txt
+          cat compare.txt
+          grep -q "small-1" compare.txt
+          grep -q "eligible" compare.txt
+
+      - name: Catalogue is consistent
+        run: |
+          llm-router catalog > catalog.txt
+          cat catalog.txt
+          test "$(wc -l < catalog.txt)" -eq 4
